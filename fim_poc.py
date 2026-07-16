@@ -21,8 +21,16 @@ import hashlib
 import time
 import datetime
 import threading
-import tkinter as tk
-from tkinter import ttk, messagebox
+try:
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+    GUI_AVAILABLE = True
+except Exception:
+    # Entorno sin tkinter (modo headless posible)
+    GUI_AVAILABLE = False
+    tk = None
+    ttk = None
+    messagebox = None
 
 # --- Configuración global ---
 DB_FILENAME = "integridad_monitores.db"
@@ -152,7 +160,7 @@ def obtener_alertas(limit=100):
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT ruta_archivo, fecha_hora, usuario, hash_anterior, hash_nuevo, tiempo_deteccion_ms FROM alertas ORDER BY id DESC LIMIT ?",
+        "SELECT ruta_archivo, fecha_hora, usuario, tiempo_deteccion_ms, hash_anterior, hash_nuevo FROM alertas ORDER BY id DESC LIMIT ?",
         (limit,),
     )
     rows = cur.fetchall()
@@ -265,6 +273,29 @@ def verificar_integridad(progress_callback=None, completion_callback=None):
         completion_callback()
 
 
+def monitor_continuo(poll_interval=1.0, stop_event=None, progress_callback=None):
+    """Ejecuta verificaciones periódicas hasta que `stop_event` esté seteado.
+
+    `poll_interval` en segundos. Diseñado para uso en modo headless o en hilo.
+    """
+    if stop_event is None:
+        # crear objeto simple con atributo is_set si no se provee
+        class E:
+            def __init__(self):
+                self._v = False
+            def is_set(self):
+                return self._v
+        stop_event = E()
+
+    while not stop_event.is_set():
+        try:
+            verificar_integridad(progress_callback=progress_callback)
+        except Exception:
+            # no romper el loop por error puntual
+            pass
+        time.sleep(poll_interval)
+
+
 def obtener_usuario():
     """Obtener nombre de usuario del sistema de forma robusta sin libs extra."""
     try:
@@ -300,6 +331,8 @@ class FIMApp(tk.Tk):
         # Estado de parpadeo
         self._blink_job = None
         self._blink_state = False
+        self._monitoring = False
+        self._monitor_stop = None
 
         # Cargar alertas iniciales
         self.refresh_alerts()
@@ -354,6 +387,10 @@ class FIMApp(tk.Tk):
         btn_clear = ttk.Button(panel, text="Limpiar Alertas", command=self.on_clear_alerts)
         btn_clear.place(x=552, y=12, width=140, height=36)
 
+        # Botón toggle para monitor continuo
+        self.btn_monitor = ttk.Button(panel, text="Monitor Continuo: OFF", command=self._toggle_monitor)
+        self.btn_monitor.place(x=702, y=12, width=160, height=36)
+
         # Indicador de progreso/estado
         self.progress_var = tk.StringVar(value="Listo")
         lbl_prog = ttk.Label(panel, textvariable=self.progress_var)
@@ -362,22 +399,27 @@ class FIMApp(tk.Tk):
     def _create_treeview(self):
         frame = ttk.Frame(self, style="Card.TFrame")
         frame.place(x=12, y=172, width=876, height=376)
-
-        cols = ("ruta", "fecha", "usuario", "tiempo_ms")
+        cols = ("ruta", "fecha", "usuario", "tiempo_ms", "hash_ant", "hash_new")
         self.tree = ttk.Treeview(frame, columns=cols, show="headings", height=18)
         self.tree.heading("ruta", text="Ruta")
         self.tree.heading("fecha", text="Fecha/Hora (UTC)")
         self.tree.heading("usuario", text="Usuario")
         self.tree.heading("tiempo_ms", text="Tiempo Detección (ms)")
-        self.tree.column("ruta", width=480)
-        self.tree.column("fecha", width=200)
-        self.tree.column("usuario", width=120)
-        self.tree.column("tiempo_ms", width=120, anchor="e")
+        self.tree.heading("hash_ant", text="Hash Anterior")
+        self.tree.heading("hash_new", text="Hash Nuevo")
+        self.tree.column("ruta", width=360)
+        self.tree.column("fecha", width=160)
+        self.tree.column("usuario", width=100)
+        self.tree.column("tiempo_ms", width=100, anchor="e")
+        self.tree.column("hash_ant", width=300)
+        self.tree.column("hash_new", width=300)
 
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.place(x=12, y=12, width=820, height=340)
-        vsb.place(x=836, y=12, height=340)
+        hsb = ttk.Scrollbar(frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.tree.place(x=12, y=12, width=820, height=320)
+        vsb.place(x=836, y=12, height=320)
+        hsb.place(x=12, y=332, width=820)
 
     # ----------------- Acciones de botones -----------------
     def on_baseline(self):
@@ -412,6 +454,35 @@ class FIMApp(tk.Tk):
 
         threading.Thread(target=lambda: verificar_integridad(progress_callback=progress, completion_callback=completion), daemon=True).start()
 
+    def _toggle_monitor(self):
+        if self._monitoring:
+            self._stop_monitor()
+        else:
+            self._start_monitor()
+
+    def _start_monitor(self, interval=1.0):
+        if self._monitoring:
+            return
+        self._monitoring = True
+        self._monitor_stop = threading.Event()
+        self.btn_monitor.config(text=f"Monitor Continuo: ON")
+
+        def progress(path, estado):
+            self.after(0, lambda: self.progress_var.set(f"Monitoreo: {os.path.basename(path)} -> {estado}"))
+
+        def loop():
+            monitor_continuo(poll_interval=interval, stop_event=self._monitor_stop, progress_callback=progress)
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    def _stop_monitor(self):
+        if not self._monitoring:
+            return
+        self._monitoring = False
+        if self._monitor_stop:
+            self._monitor_stop.set()
+        self.btn_monitor.config(text=f"Monitor Continuo: OFF")
+
     def on_simulate(self):
         # Modificar ligeramente el archivo de prueba para simular ataque
         try:
@@ -444,8 +515,9 @@ class FIMApp(tk.Tk):
 
         rows = obtener_alertas(limit=500)
         compromised = False
-        for ruta, fecha, usuario, hash_ant, hash_nuevo, tiempo_ms in rows:
-            self.tree.insert("", "end", values=(ruta, fecha, usuario, f"{tiempo_ms:.2f}"))
+        for ruta, fecha, usuario, tiempo_ms, hash_ant, hash_nuevo in rows:
+            tiempo_str = f"{tiempo_ms:.2f}" if isinstance(tiempo_ms, (int, float)) else str(tiempo_ms)
+            self.tree.insert("", "end", values=(ruta, fecha, usuario, tiempo_str, hash_ant or "", hash_nuevo or ""))
             compromised = True
 
         # Actualizar indicador
@@ -481,6 +553,46 @@ def main():
     # Inicialización
     init_db()
     ensure_watch_dir()
+
+    # CLI: modo headless para entornos sin tkinter
+    import argparse
+    parser = argparse.ArgumentParser(description="PoC FIM - modo CLI/GUI")
+    parser.add_argument("--headless", action="store_true", help="Ejecutar en modo sin GUI (CLI)")
+    parser.add_argument("--action", choices=["baseline","scan","monitor","simulate","clear"], help="Acción a ejecutar en modo headless")
+    parser.add_argument("--monitor-interval", type=float, default=1.0, help="Intervalo (s) para monitor continuo en modo headless")
+    args = parser.parse_args()
+
+    if args.headless:
+        # Ejecutar acción solicitada y salir (o monitor continuo)
+        if args.action == "baseline":
+            establecer_linea_base()
+            print("LINEA_BASE_OK")
+        elif args.action == "scan":
+            verificar_integridad()
+            print("ESCANEO_OK")
+        elif args.action == "simulate":
+            ensure_watch_dir()
+            with open(TEST_FILENAME, "a", encoding="utf-8") as f:
+                f.write(f"# simulacion {datetime.datetime.utcnow().isoformat()}\n")
+            print("SIMULACION_OK")
+        elif args.action == "clear":
+            limpiar_alertas()
+            print("ALERTAS_LIMPIADAS")
+        elif args.action == "monitor":
+            print(f"INICIANDO_MONITOR_CONTINUO intervalo={args.monitor_interval}s (CTRL-C para parar)")
+            try:
+                stop = threading.Event()
+                monitor_continuo(poll_interval=args.monitor_interval, stop_event=stop)
+            except KeyboardInterrupt:
+                print("MONITOR_DETENIDO")
+        else:
+            print("Modo headless: especifique --action baseline|scan|monitor|simulate|clear")
+        return
+
+    # Si no hay tkinter disponible, informar y salir
+    if not GUI_AVAILABLE:
+        print("tkinter no disponible en este entorno. Use --headless para ejecutar en modo CLI.")
+        return
 
     app = FIMApp()
     app.mainloop()
