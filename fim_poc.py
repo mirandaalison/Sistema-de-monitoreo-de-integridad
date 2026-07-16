@@ -348,6 +348,11 @@ class FIMApp(tk.Tk):
         self.style = ttk.Style(self)
         self._setup_style()
 
+        self.summary_files_var = tk.StringVar(value="Archivos: 0")
+        self.summary_alerts_var = tk.StringVar(value="Alertas: 0")
+        self.summary_scan_var = tk.StringVar(value="Último evento: N/A")
+        self.summary_monitor_var = tk.StringVar(value="Monitoreo: OFF")
+
         # Widgets
         self._create_header()
         self._create_controls()
@@ -358,11 +363,6 @@ class FIMApp(tk.Tk):
         self._blink_state = False
         self._monitoring = False
         self._monitor_stop = None
-
-        self.summary_files_var = tk.StringVar(value="Archivos: 0")
-        self.summary_alerts_var = tk.StringVar(value="Alertas: 0")
-        self.summary_scan_var = tk.StringVar(value="Último evento: N/A")
-        self.summary_monitor_var = tk.StringVar(value="Monitoreo: OFF")
 
         # Cargar alertas iniciales
         self.refresh_alerts()
