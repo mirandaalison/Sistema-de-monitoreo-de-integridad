@@ -176,6 +176,31 @@ def limpiar_alertas():
     conn.close()
 
 
+def contar_alertas():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM alertas")
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def obtener_ultimo_evento():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT fecha_hora FROM alertas ORDER BY id DESC LIMIT 1")
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else "N/A"
+
+
+def contar_archivos_observados():
+    total = 0
+    for root, _, files in os.walk(WATCH_DIR):
+        total += len(files)
+    return total
+
+
 def obtener_inventario():
     conn = get_db_connection()
     cur = conn.cursor()
@@ -273,7 +298,7 @@ def verificar_integridad(progress_callback=None, completion_callback=None):
         completion_callback()
 
 
-def monitor_continuo(poll_interval=1.0, stop_event=None, progress_callback=None):
+def monitor_continuo(poll_interval=1.0, stop_event=None, progress_callback=None, completion_callback=None):
     """Ejecuta verificaciones periódicas hasta que `stop_event` esté seteado.
 
     `poll_interval` en segundos. Diseñado para uso en modo headless o en hilo.
@@ -289,7 +314,7 @@ def monitor_continuo(poll_interval=1.0, stop_event=None, progress_callback=None)
 
     while not stop_event.is_set():
         try:
-            verificar_integridad(progress_callback=progress_callback)
+            verificar_integridad(progress_callback=progress_callback, completion_callback=completion_callback)
         except Exception:
             # no romper el loop por error puntual
             pass
@@ -316,7 +341,7 @@ class FIMApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("🛡️ SISTEMA DE MONITOREO DE INTEGRIDAD (FIM)")
-        self.geometry("900x560")
+        self.geometry("980x660")
         self.resizable(False, False)
 
         # Tema oscuro básico
@@ -333,6 +358,11 @@ class FIMApp(tk.Tk):
         self._blink_state = False
         self._monitoring = False
         self._monitor_stop = None
+
+        self.summary_files_var = tk.StringVar(value="Archivos: 0")
+        self.summary_alerts_var = tk.StringVar(value="Alertas: 0")
+        self.summary_scan_var = tk.StringVar(value="Último evento: N/A")
+        self.summary_monitor_var = tk.StringVar(value="Monitoreo: OFF")
 
         # Cargar alertas iniciales
         self.refresh_alerts()
@@ -363,63 +393,73 @@ class FIMApp(tk.Tk):
 
     def _create_header(self):
         header = ttk.Frame(self, style="Card.TFrame")
-        header.place(x=12, y=12, width=876, height=80)
+        header.place(x=12, y=12, width=956, height=100)
 
         title = ttk.Label(header, text="🛡️ SISTEMA DE MONITOREO DE INTEGRIDAD (FIM)", style="Header.TLabel")
         title.place(x=20, y=10)
 
         self.status_label = ttk.Label(header, text="🟢 SISTEMA SEGURO", font=("Segoe UI", 12, "bold"))
-        self.status_label.place(x=20, y=40)
+        self.status_label.place(x=20, y=50)
+
+        # Panel de resumen rápido
+        ttk.Label(header, textvariable=self.summary_files_var, font=("Segoe UI", 10, "bold"), foreground=self._colors["success"]).place(x=520, y=15)
+        ttk.Label(header, textvariable=self.summary_alerts_var, font=("Segoe UI", 10, "bold"), foreground=self._colors["danger"]).place(x=520, y=35)
+        ttk.Label(header, textvariable=self.summary_monitor_var, font=("Segoe UI", 10, "bold"), foreground=self._colors["fg"]).place(x=520, y=55)
+        ttk.Label(header, textvariable=self.summary_scan_var, font=("Segoe UI", 9), foreground=self._colors["fg"]).place(x=520, y=75)
 
     def _create_controls(self):
         panel = ttk.Frame(self, style="Card.TFrame")
-        panel.place(x=12, y=100, width=876, height=60)
+        panel.place(x=12, y=120, width=956, height=108)
 
         btn_base = ttk.Button(panel, text="Establecer Línea Base", command=self.on_baseline)
-        btn_base.place(x=12, y=12, width=160, height=36)
+        btn_base.place(x=12, y=12, width=180, height=36)
 
         btn_scan = ttk.Button(panel, text="Escanear Ahora", command=self.on_scan)
-        btn_scan.place(x=192, y=12, width=140, height=36)
+        btn_scan.place(x=210, y=12, width=160, height=36)
 
-        btn_sim = ttk.Button(panel, text="Simular Modificación", command=self.on_simulate)
-        btn_sim.place(x=352, y=12, width=180, height=36)
+        self.btn_monitor = ttk.Button(panel, text="Monitor Continuo: OFF", command=self._toggle_monitor)
+        self.btn_monitor.place(x=390, y=12, width=180, height=36)
 
         btn_clear = ttk.Button(panel, text="Limpiar Alertas", command=self.on_clear_alerts)
-        btn_clear.place(x=552, y=12, width=140, height=36)
+        btn_clear.place(x=580, y=12, width=140, height=36)
 
-        # Botón toggle para monitor continuo
-        self.btn_monitor = ttk.Button(panel, text="Monitor Continuo: OFF", command=self._toggle_monitor)
-        self.btn_monitor.place(x=702, y=12, width=160, height=36)
+        btn_sim = ttk.Button(panel, text="Simular Modificación", command=self.on_simulate)
+        btn_sim.place(x=730, y=12, width=200, height=36)
 
         # Indicador de progreso/estado
         self.progress_var = tk.StringVar(value="Listo")
         lbl_prog = ttk.Label(panel, textvariable=self.progress_var)
-        lbl_prog.place(x=712, y=18)
+        lbl_prog.place(x=20, y=58)
+
+        self.monitor_indicator = ttk.Label(panel, textvariable=self.summary_monitor_var, font=("Segoe UI", 9, "italic"), foreground=self._colors["fg"])
+        self.monitor_indicator.place(x=210, y=58)
 
     def _create_treeview(self):
         frame = ttk.Frame(self, style="Card.TFrame")
-        frame.place(x=12, y=172, width=876, height=376)
-        cols = ("ruta", "fecha", "usuario", "tiempo_ms", "hash_ant", "hash_new")
+        frame.place(x=12, y=230, width=956, height=408)
+        cols = ("ruta", "fecha", "usuario", "evento", "tiempo_ms", "hash_ant", "hash_new")
         self.tree = ttk.Treeview(frame, columns=cols, show="headings", height=18)
         self.tree.heading("ruta", text="Ruta")
         self.tree.heading("fecha", text="Fecha/Hora (UTC)")
         self.tree.heading("usuario", text="Usuario")
+        self.tree.heading("evento", text="Evento")
         self.tree.heading("tiempo_ms", text="Tiempo Detección (ms)")
         self.tree.heading("hash_ant", text="Hash Anterior")
         self.tree.heading("hash_new", text="Hash Nuevo")
-        self.tree.column("ruta", width=360)
-        self.tree.column("fecha", width=160)
+        self.tree.column("ruta", width=260)
+        self.tree.column("fecha", width=140)
         self.tree.column("usuario", width=100)
-        self.tree.column("tiempo_ms", width=100, anchor="e")
-        self.tree.column("hash_ant", width=300)
-        self.tree.column("hash_new", width=300)
+        self.tree.column("evento", width=100)
+        self.tree.column("tiempo_ms", width=120, anchor="e")
+        self.tree.column("hash_ant", width=220)
+        self.tree.column("hash_new", width=220)
 
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(frame, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        self.tree.place(x=12, y=12, width=820, height=320)
-        vsb.place(x=836, y=12, height=320)
-        hsb.place(x=12, y=332, width=820)
+        self.tree.place(x=12, y=12, width=908, height=360)
+        vsb.place(x=924, y=12, height=360)
+        hsb.place(x=12, y=376, width=908)
 
     # ----------------- Acciones de botones -----------------
     def on_baseline(self):
@@ -442,6 +482,7 @@ class FIMApp(tk.Tk):
             return
         self._scanning = True
         self.progress_var.set("Escaneando...")
+        self.btn_monitor.config(state="disabled")
 
         def progress(path, estado):
             # Actualizar UI desde hilo principal
@@ -449,8 +490,10 @@ class FIMApp(tk.Tk):
 
         def completion():
             self._scanning = False
+            self.btn_monitor.config(state="normal")
             self.after(0, lambda: self.progress_var.set("Escaneo finalizado."))
             self.after(100, self.refresh_alerts)
+            self.after(0, lambda: self.summary_monitor_var.set("Monitoreo: OFF" if not self._monitoring else "Monitoreo: ON"))
 
         threading.Thread(target=lambda: verificar_integridad(progress_callback=progress, completion_callback=completion), daemon=True).start()
 
@@ -470,8 +513,11 @@ class FIMApp(tk.Tk):
         def progress(path, estado):
             self.after(0, lambda: self.progress_var.set(f"Monitoreo: {os.path.basename(path)} -> {estado}"))
 
+        def completion():
+            self.after(0, self.refresh_alerts)
+
         def loop():
-            monitor_continuo(poll_interval=interval, stop_event=self._monitor_stop, progress_callback=progress)
+            monitor_continuo(poll_interval=interval, stop_event=self._monitor_stop, progress_callback=progress, completion_callback=completion)
 
         threading.Thread(target=loop, daemon=True).start()
 
@@ -482,6 +528,7 @@ class FIMApp(tk.Tk):
         if self._monitor_stop:
             self._monitor_stop.set()
         self.btn_monitor.config(text=f"Monitor Continuo: OFF")
+        self.summary_monitor_var.set("Monitoreo: OFF")
 
     def on_simulate(self):
         # Modificar ligeramente el archivo de prueba para simular ataque
@@ -517,14 +564,31 @@ class FIMApp(tk.Tk):
         compromised = False
         for ruta, fecha, usuario, tiempo_ms, hash_ant, hash_nuevo in rows:
             tiempo_str = f"{tiempo_ms:.2f}" if isinstance(tiempo_ms, (int, float)) else str(tiempo_ms)
-            self.tree.insert("", "end", values=(ruta, fecha, usuario, tiempo_str, hash_ant or "", hash_nuevo or ""))
+            evento = self._calcular_evento(hash_ant, hash_nuevo)
+            self.tree.insert("", "end", values=(ruta, fecha, usuario, evento, tiempo_str, hash_ant or "", hash_nuevo or ""))
             compromised = True
+
+        self.summary_files_var.set(f"Archivos: {contar_archivos_observados()}")
+        self.summary_alerts_var.set(f"Alertas: {contar_alertas()}")
+        self.summary_scan_var.set(f"Último evento: {obtener_ultimo_evento()}")
+        self.summary_monitor_var.set("Monitoreo: ON" if self._monitoring else "Monitoreo: OFF")
 
         # Actualizar indicador
         if compromised:
             self._set_compromised(True)
         else:
             self._set_compromised(False)
+
+    def _calcular_evento(self, hash_ant, hash_nuevo):
+        if hash_nuevo == "ELIMINADO":
+            return "Eliminado"
+        if hash_ant in (None, "NUEVO", "HASH_BASE_VACIO"):
+            return "Nuevo"
+        if hash_nuevo == "ERROR_LECTURA":
+            return "Error lectura"
+        if hash_ant == hash_nuevo:
+            return "Sin cambio"
+        return "Modificado"
 
     def _set_compromised(self, compromised: bool):
         if compromised:
@@ -543,7 +607,7 @@ class FIMApp(tk.Tk):
 
     def _blink(self):
         # Cambia color entre rojo y fondo para llamar la atención
-        fg = self._colors["danger"] if self._blink_state else self._colors["fg"]
+        fg = self._colors["danger"] if self._blink_state else self._colors["bg"]
         self.status_label.config(foreground=fg)
         self._blink_state = not self._blink_state
         self._blink_job = self.after(600, self._blink)
