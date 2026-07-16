@@ -21,6 +21,7 @@ import hashlib
 import time
 import datetime
 import threading
+import subprocess
 try:
     import tkinter as tk
     from tkinter import ttk, messagebox
@@ -36,6 +37,15 @@ except Exception:
 DB_FILENAME = "integridad_monitores.db"
 WATCH_DIR = os.path.join(os.getcwd(), "archivos_criticos")
 TEST_FILENAME = os.path.join(WATCH_DIR, "config.cfg")
+
+# Sincronización remota desde Metasploitable hacia Ubuntu
+REMOTE_SYNC_ENABLED = True
+REMOTE_USER = "msfadmin"
+REMOTE_HOST = "10.0.2.3"
+REMOTE_SOURCE_FILE = "/home/msfadmin/archivos_meta/config.cfg"
+REMOTE_SSH_PORT = 22
+REMOTE_SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"]
+REMOTE_TARGET_FILE = TEST_FILENAME
 
 
 def get_db_connection():
@@ -103,12 +113,49 @@ def sha256_of_file(path):
     return h.hexdigest()
 
 
+def sincronizar_remoto(progress_callback=None):
+    """Sincroniza un archivo remoto desde Metasploitable hacia la carpeta local."""
+    if not REMOTE_SYNC_ENABLED:
+        if progress_callback:
+            progress_callback("", "REMOTO_DESACTIVADO")
+        return False
+    ensure_watch_dir()
+    remote_spec = f"{REMOTE_USER}@{REMOTE_HOST}:{REMOTE_SOURCE_FILE}"
+    local_path = REMOTE_TARGET_FILE
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    cmd = ["scp", "-P", str(REMOTE_SSH_PORT)] + REMOTE_SSH_OPTIONS + [remote_spec, local_path]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        if proc.returncode != 0:
+            message = proc.stderr.strip() or proc.stdout.strip() or "scp falló"
+            if progress_callback:
+                progress_callback(remote_spec, f"SCP_ERROR: {message}")
+            return False
+        else:
+            if progress_callback:
+                progress_callback(remote_spec, "REMOTO_SINCRONIZADO")
+            return True
+    except FileNotFoundError:
+        if progress_callback:
+            progress_callback(remote_spec, "SCP_NO_INSTALADO")
+        return False
+    except subprocess.TimeoutExpired:
+        if progress_callback:
+            progress_callback(remote_spec, "SCP_TIMEOUT")
+        return False
+    except Exception as e:
+        if progress_callback:
+            progress_callback(remote_spec, f"SCP_EXCEPTION: {e}")
+        return False
+
+
 def establecer_linea_base(progress_callback=None):
     """Escanea la carpeta y guarda/actualiza la línea base en `inventario`.
 
     Si `progress_callback` es una función, se la llama con (ruta, estado).
     """
     ensure_watch_dir()
+    sincronizar_remoto(progress_callback=progress_callback)
     archivos = []
     for root, _, files in os.walk(WATCH_DIR):
         for fn in files:
@@ -234,6 +281,18 @@ def verificar_integridad(progress_callback=None, completion_callback=None):
 
     # Tomar snapshot de inventario (baseline)
     baseline = obtener_inventario()
+
+    # Si no hay línea base previa, crearla y no generar alertas falsas.
+    if not baseline:
+        if progress_callback:
+            progress_callback("", "LÍNEA BASE AUTOMÁTICA")
+        establecer_linea_base(progress_callback=progress_callback)
+        if completion_callback:
+            completion_callback()
+        return
+
+    # Sincronizar el contenido remoto antes de verificar
+    sincronizar_remoto(progress_callback=progress_callback)
 
     # Escanear archivos actuales
     actuales = []
@@ -423,13 +482,28 @@ class FIMApp(tk.Tk):
         btn_clear = ttk.Button(panel, text="Limpiar Alertas", command=self.on_clear_alerts)
         btn_clear.place(x=580, y=12, width=140, height=36)
 
+        btn_sync = ttk.Button(panel, text="Sincronizar Remoto", command=self.on_remote_sync)
+        btn_sync.place(x=730, y=12, width=140, height=36)
+
         btn_sim = ttk.Button(panel, text="Simular Modificación", command=self.on_simulate)
-        btn_sim.place(x=730, y=12, width=200, height=36)
+        btn_sim.place(x=880, y=12, width=140, height=36)
+
+        # Descripción de funciones
+        descripcion = (
+            "Establecer Línea Base: guarda hashes actuales como referencia. "
+            "Escanear Ahora: compara archivos con la línea base y agrega alertas si hay cambios. "
+            "Monitor Continuo: revisa los archivos automáticamente cada segundo. "
+            "Limpiar Alertas: borra el historial de alertas. "
+            "Sincronizar Remoto: trae el archivo remoto desde Metasploitable. "
+            "Simular Modificación: altera config.cfg local para probar la detección."
+        )
+        lbl_desc = ttk.Label(panel, text=descripcion, wraplength=920, font=("Segoe UI", 9), foreground=self._colors["fg"])
+        lbl_desc.place(x=12, y=58, width=908, height=40)
 
         # Indicador de progreso/estado
         self.progress_var = tk.StringVar(value="Listo")
         lbl_prog = ttk.Label(panel, textvariable=self.progress_var)
-        lbl_prog.place(x=20, y=58)
+        lbl_prog.place(x=20, y=102)
 
         self.monitor_indicator = ttk.Label(panel, textvariable=self.summary_monitor_var, font=("Segoe UI", 9, "italic"), foreground=self._colors["fg"])
         self.monitor_indicator.place(x=210, y=58)
@@ -530,6 +604,18 @@ class FIMApp(tk.Tk):
         self.btn_monitor.config(text=f"Monitor Continuo: OFF")
         self.summary_monitor_var.set("Monitoreo: OFF")
 
+    def on_remote_sync(self):
+        self.progress_var.set("Sincronizando remoto...")
+        def progress(path, estado):
+            self.after(0, lambda: self.progress_var.set(f"{os.path.basename(path)} -> {estado}"))
+
+        def worker():
+            sincronizar_remoto(progress_callback=progress)
+            self.after(0, lambda: self.progress_var.set("Sincronización remota completada."))
+            self.after(100, self.refresh_alerts)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def on_simulate(self):
         # Modificar ligeramente el archivo de prueba para simular ataque
         try:
@@ -543,6 +629,17 @@ class FIMApp(tk.Tk):
             self.progress_var.set("Archivo modificado (simulación).")
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo simular la modificación: {e}")
+
+    def _calcular_evento(self, hash_ant, hash_nuevo):
+        if hash_nuevo == "ELIMINADO":
+            return "Eliminado"
+        if hash_nuevo == "ERROR_LECTURA":
+            return "Error lectura"
+        if hash_ant in (None, "NUEVO", "HASH_BASE_VACIO"):
+            return "Nuevo"
+        if hash_ant == hash_nuevo:
+            return "Sin cambio"
+        return "Modificado"
 
     def on_clear_alerts(self):
         if not messagebox.askyesno("Confirmar", "¿Limpiar todas las alertas?"):
@@ -579,17 +676,6 @@ class FIMApp(tk.Tk):
         else:
             self._set_compromised(False)
 
-    def _calcular_evento(self, hash_ant, hash_nuevo):
-        if hash_nuevo == "ELIMINADO":
-            return "Eliminado"
-        if hash_ant in (None, "NUEVO", "HASH_BASE_VACIO"):
-            return "Nuevo"
-        if hash_nuevo == "ERROR_LECTURA":
-            return "Error lectura"
-        if hash_ant == hash_nuevo:
-            return "Sin cambio"
-        return "Modificado"
-
     def _set_compromised(self, compromised: bool):
         if compromised:
             # Texto y parpadeo en rojo
@@ -622,7 +708,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="PoC FIM - modo CLI/GUI")
     parser.add_argument("--headless", action="store_true", help="Ejecutar en modo sin GUI (CLI)")
-    parser.add_argument("--action", choices=["baseline","scan","monitor","simulate","clear"], help="Acción a ejecutar en modo headless")
+    parser.add_argument("--action", choices=["baseline","scan","monitor","simulate","clear","sync"], help="Acción a ejecutar en modo headless")
     parser.add_argument("--monitor-interval", type=float, default=1.0, help="Intervalo (s) para monitor continuo en modo headless")
     args = parser.parse_args()
 
@@ -642,6 +728,12 @@ def main():
         elif args.action == "clear":
             limpiar_alertas()
             print("ALERTAS_LIMPIADAS")
+        elif args.action == "sync":
+            success = sincronizar_remoto()
+            if success:
+                print("SINCRONIZACION_REMOTA_OK")
+            else:
+                print("SINCRONIZACION_REMOTA_FALLO")
         elif args.action == "monitor":
             print(f"INICIANDO_MONITOR_CONTINUO intervalo={args.monitor_interval}s (CTRL-C para parar)")
             try:
