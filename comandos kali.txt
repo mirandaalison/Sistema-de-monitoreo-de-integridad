@@ -1,0 +1,18 @@
+CRUD desde Kali
+
+Crear archivo:
+ssh -oHostKeyAlgorithms=+ssh-rsa -oPubkeyAcceptedAlgorithms=+ssh-rsa -oStrictHostKeyChecking=
+no -p 22 msfadmin@10.0.2.4 "echo ’prueba’ > /home/msfadmin/carpeta_critica/nuevo.txt"
+
+Leer archivo:
+ssh -oHostKeyAlgorithms=+ssh-rsa -oPubkeyAcceptedAlgorithms=+ssh-rsa -oStrictHostKeyChecking=
+no -p 22 msfadmin@10.0.2.4 "cat /home/msfadmin/carpeta_critica/nuevo.txt"
+
+Modificar archivo:
+ssh -oHostKeyAlgorithms=+ssh-rsa -oPubkeyAcceptedAlgorithms=+ssh-rsa -oStrictHostKeyChecking=
+no -p 22 msfadmin@10.0.2.4 "echo ’linea actualizada’ >> /home/msfadmin/carpeta_critica/
+nuevo.txt"
+
+Eliminar archivo:
+ssh -oHostKeyAlgorithms=+ssh-rsa -oPubkeyAcceptedAlgorithms=+ssh-rsa -oStrictHostKeyChecking=
+no -p 22 msfadmin@10.0.2.4 "rm -f /home/msfadmin/carpeta_critica/nuevo.txt"

@@ -512,8 +512,8 @@ def build_dashboard_html(message=None):
             f"<td>{html.escape(usuario or '')}</td>"
             f"<td>{html.escape(evento)}</td>"
             f"<td>{html.escape(tiempo_str)}</td>"
-            f"<td>{html.escape(hash_ant or '')}</td>"
-            f"<td>{html.escape(hash_nuevo or '')}</td>"
+            f"<td class='hash-cell'>{html.escape(hash_ant or '')}</td>"
+            f"<td class='hash-cell'>{html.escape(hash_nuevo or '')}</td>"
             "</tr>"
         )
     if not rows_html:
@@ -559,10 +559,11 @@ def build_dashboard_html(message=None):
     button {{ background: linear-gradient(135deg, var(--accent), #2563eb); color: white; border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 600; box-shadow: 0 6px 16px rgba(56,189,248,0.18); }}
     button.danger {{ background: linear-gradient(135deg, var(--danger), #b91c1c); }}
     button:hover {{ transform: translateY(-1px); }}
-    table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
-    th, td {{ border-bottom: 1px solid var(--border); padding: 10px 8px; text-align: left; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 10px; table-layout: fixed; }}
+    th, td {{ border-bottom: 1px solid var(--border); padding: 10px 8px; text-align: left; vertical-align: top; }}
     th {{ background: rgba(255,255,255,0.04); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
     tr:hover {{ background: rgba(255,255,255,0.03); }}
+    .hash-cell {{ max-width: 280px; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; white-space: normal; overflow-wrap: anywhere; word-break: break-all; line-height: 1.4; }}
     .message {{ padding: 12px 14px; border-radius: 10px; background: rgba(34,197,94,0.16); border: 1px solid rgba(34,197,94,0.3); color: #bbf7d0; margin-top: 14px; }}
     .badge {{ display: inline-block; padding: 6px 10px; border-radius: 999px; background: rgba(245,158,11,0.16); color: #fde68a; font-size: 12px; }}
   </style>
