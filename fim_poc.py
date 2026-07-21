@@ -22,6 +22,9 @@ import time
 import datetime
 import threading
 import subprocess
+import html
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
     import tkinter as tk
     from tkinter import ttk, messagebox
@@ -38,14 +41,14 @@ DB_FILENAME = "integridad_monitores.db"
 WATCH_DIR = os.path.join(os.getcwd(), "archivos_criticos")
 TEST_FILENAME = os.path.join(WATCH_DIR, "config.cfg")
 
-# Sincronización remota desde Metasploitable hacia Ubuntu
+# Sincronización remota desde Metasploitable2 hacia Ubuntu
 REMOTE_SYNC_ENABLED = True
 REMOTE_USER = "msfadmin"
 REMOTE_HOST = "10.0.2.3"
-REMOTE_SOURCE_FILE = "/home/msfadmin/archivos_meta/config.cfg"
+REMOTE_SOURCE_DIR = "/home/msfadmin/archivos_criticos"
 REMOTE_SSH_PORT = 22
 REMOTE_SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"]
-REMOTE_TARGET_FILE = TEST_FILENAME
+REMOTE_TARGET_DIR = WATCH_DIR
 
 
 def get_db_connection():
@@ -114,16 +117,17 @@ def sha256_of_file(path):
 
 
 def sincronizar_remoto(progress_callback=None):
-    """Sincroniza un archivo remoto desde Metasploitable hacia la carpeta local."""
+    """Sincroniza una carpeta remota desde Metasploitable2 hacia la carpeta local."""
     if not REMOTE_SYNC_ENABLED:
         if progress_callback:
             progress_callback("", "REMOTO_DESACTIVADO")
         return False
     ensure_watch_dir()
-    remote_spec = f"{REMOTE_USER}@{REMOTE_HOST}:{REMOTE_SOURCE_FILE}"
-    local_path = REMOTE_TARGET_FILE
-    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-    cmd = ["scp", "-P", str(REMOTE_SSH_PORT)] + REMOTE_SSH_OPTIONS + [remote_spec, local_path]
+    remote_spec = f"{REMOTE_USER}@{REMOTE_HOST}:{REMOTE_SOURCE_DIR}"
+    local_path = REMOTE_TARGET_DIR
+    os.makedirs(local_path, exist_ok=True)
+    remote_contents_spec = remote_spec.rstrip("/") + "/."
+    cmd = ["scp", "-r", "-P", str(REMOTE_SSH_PORT)] + REMOTE_SSH_OPTIONS + [remote_contents_spec, local_path]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
         if proc.returncode != 0:
@@ -393,6 +397,183 @@ def obtener_usuario():
     return "desconocido"
 
 
+# ----------------- Interfaz Web en localhost -----------------
+
+def get_dashboard_data():
+    rows = obtener_alertas(limit=100)
+    return {
+        "files": contar_archivos_observados(),
+        "alerts": contar_alertas(),
+        "last_event": obtener_ultimo_evento(),
+        "rows": rows,
+    }
+
+
+def build_dashboard_html(message=None):
+    data = get_dashboard_data()
+    rows_html = ""
+    for ruta, fecha, usuario, tiempo_ms, hash_ant, hash_nuevo in data["rows"]:
+        evento = "Modificado"
+        if hash_nuevo == "ELIMINADO":
+            evento = "Eliminado"
+        elif hash_nuevo == "ERROR_LECTURA":
+            evento = "Error lectura"
+        elif hash_ant in (None, "NUEVO", "HASH_BASE_VACIO"):
+            evento = "Nuevo"
+        elif hash_ant == hash_nuevo:
+            evento = "Sin cambio"
+        tiempo_str = f"{tiempo_ms:.2f}" if isinstance(tiempo_ms, (int, float)) else str(tiempo_ms)
+        rows_html += (
+            "<tr>"
+            f"<td>{html.escape(ruta)}</td>"
+            f"<td>{html.escape(fecha)}</td>"
+            f"<td>{html.escape(usuario or '')}</td>"
+            f"<td>{html.escape(evento)}</td>"
+            f"<td>{html.escape(tiempo_str)}</td>"
+            f"<td>{html.escape(hash_ant or '')}</td>"
+            f"<td>{html.escape(hash_nuevo or '')}</td>"
+            "</tr>"
+        )
+    if not rows_html:
+        rows_html = "<tr><td colspan='7'>Sin alertas todavía</td></tr>"
+
+    message_html = ""
+    if message:
+        message_html = f"<div class='message'>{html.escape(message)}</div>"
+
+    return f"""<!doctype html>
+<html lang='es'>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <title>FIM Dashboard</title>
+  <style>
+    :root {{
+      --bg: #07111f;
+      --panel: #0f172a;
+      --panel-2: #111c32;
+      --border: #243244;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #22c55e;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; background: linear-gradient(135deg, var(--bg), #111827 70%); color: var(--text); }}
+    .container {{ max-width: 1320px; margin: 0 auto; padding: 28px; }}
+    .hero {{ background: linear-gradient(135deg, rgba(56,189,248,0.2), rgba(34,197,94,0.12)); border: 1px solid var(--border); border-radius: 20px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }}
+    .header {{ display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }}
+    .title {{ font-size: 30px; margin: 0; font-weight: 700; }}
+    .subtitle {{ color: var(--muted); margin-top: 6px; }}
+    .pill {{ display: inline-block; padding: 7px 12px; background: rgba(56,189,248,0.16); border: 1px solid rgba(56,189,248,0.35); border-radius: 999px; color: #bae6fd; font-size: 13px; }}
+    .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 18px; }}
+    .stat {{ background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }}
+    .stat .label {{ color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }}
+    .stat .value {{ font-size: 24px; font-weight: 700; margin-top: 6px; }}
+    .card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 18px; margin-top: 18px; box-shadow: 0 8px 24px rgba(0,0,0,0.18); }}
+    .actions {{ display: flex; flex-wrap: wrap; gap: 10px; }}
+    button {{ background: linear-gradient(135deg, var(--accent), #2563eb); color: white; border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 600; box-shadow: 0 6px 16px rgba(56,189,248,0.18); }}
+    button.danger {{ background: linear-gradient(135deg, var(--danger), #b91c1c); }}
+    button:hover {{ transform: translateY(-1px); }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+    th, td {{ border-bottom: 1px solid var(--border); padding: 10px 8px; text-align: left; }}
+    th {{ background: rgba(255,255,255,0.04); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }}
+    tr:hover {{ background: rgba(255,255,255,0.03); }}
+    .message {{ padding: 12px 14px; border-radius: 10px; background: rgba(34,197,94,0.16); border: 1px solid rgba(34,197,94,0.3); color: #bbf7d0; margin-top: 14px; }}
+    .badge {{ display: inline-block; padding: 6px 10px; border-radius: 999px; background: rgba(245,158,11,0.16); color: #fde68a; font-size: 12px; }}
+  </style>
+</head>
+<body>
+  <div class='container'>
+    <div class='hero'>
+      <div class='header'>
+        <div>
+          <h1 class='title'>🛡️ FIM Dashboard</h1>
+          <div class='subtitle'>Monitoreo de integridad de archivos · Ubuntu + Metasploitable2</div>
+        </div>
+        <div class='pill'>localhost:8000</div>
+      </div>
+      {message_html}
+      <div class='stats'>
+        <div class='stat'><div class='label'>Archivos observados</div><div class='value'>{data['files']}</div></div>
+        <div class='stat'><div class='label'>Alertas registradas</div><div class='value'>{data['alerts']}</div></div>
+        <div class='stat'><div class='label'>Último evento</div><div class='value'>{html.escape(data['last_event'])}</div></div>
+      </div>
+    </div>
+    <div class='card'>
+      <div class='actions'>
+        <form method='post' action='/action'><input type='hidden' name='action' value='baseline'><button>Establecer Línea Base</button></form>
+        <form method='post' action='/action'><input type='hidden' name='action' value='scan'><button>Escanear Ahora</button></form>
+        <form method='post' action='/action'><input type='hidden' name='action' value='sync'><button>Sincronizar Remoto</button></form>
+        <form method='post' action='/action'><input type='hidden' name='action' value='clear'><button class='danger'>Limpiar Alertas</button></form>
+      </div>
+    </div>
+    <div class='card'>
+      <div class='badge'>Historial de alertas</div>
+      <table>
+        <thead><tr><th>Ruta</th><th>Fecha/Hora</th><th>Usuario</th><th>Evento</th><th>Tiempo (ms)</th><th>Hash anterior</th><th>Hash nuevo</th></tr></thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+class FIMWebHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(build_dashboard_html(message=self._get_query_message(parsed.query)).encode("utf-8"))
+            return
+        self.send_error(404)
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/action":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        form = urllib.parse.parse_qs(body)
+        action = form.get("action", [""])[0]
+
+        message = "Acción ejecutada"
+        if action == "baseline":
+            establecer_linea_base()
+            message = "Línea base establecida"
+        elif action == "scan":
+            verificar_integridad()
+            message = "Escaneo completado"
+        elif action == "sync":
+            ok = sincronizar_remoto()
+            message = "Sincronización remota completada" if ok else "Sincronización remota fallida"
+        elif action == "clear":
+            limpiar_alertas()
+            message = "Alertas limpiadas"
+        else:
+            message = "Acción no reconocida"
+
+        self.send_response(303)
+        self.send_header("Location", f"/?message={urllib.parse.quote(message)}")
+        self.end_headers()
+
+    def _get_query_message(self, query):
+        params = urllib.parse.parse_qs(query)
+        return params.get("message", [None])[0]
+
+
+def start_web_server(host="127.0.0.1", port=8000):
+    server = ThreadingHTTPServer((host, port), FIMWebHandler)
+    print(f"SERVIDOR_WEB_ACTIVO http://{host}:{port}")
+    server.serve_forever()
+
+
 # ----------------- Interfaz Gráfica (Tkinter) -----------------
 
 
@@ -485,25 +666,17 @@ class FIMApp(tk.Tk):
         btn_sync = ttk.Button(panel, text="Sincronizar Remoto", command=self.on_remote_sync)
         btn_sync.place(x=730, y=12, width=140, height=36)
 
-        btn_sim = ttk.Button(panel, text="Simular Modificación", command=self.on_simulate)
-        btn_sim.place(x=880, y=12, width=140, height=36)
-
         # Descripción de funciones
         descripcion = (
-            "Establecer Línea Base: guarda hashes actuales como referencia. "
-            "Escanear Ahora: compara archivos con la línea base y agrega alertas si hay cambios. "
-            "Monitor Continuo: revisa los archivos automáticamente cada segundo. "
-            "Limpiar Alertas: borra el historial de alertas. "
-            "Sincronizar Remoto: trae el archivo remoto desde Metasploitable. "
-            "Simular Modificación: altera config.cfg local para probar la detección."
+            "Ubuntu solo observa. Los cambios deben venir desde Metasploitable2 y se detectan al sincronizar la carpeta remota."
         )
-        lbl_desc = ttk.Label(panel, text=descripcion, wraplength=920, font=("Segoe UI", 9), foreground=self._colors["fg"])
-        lbl_desc.place(x=12, y=58, width=908, height=40)
+        lbl_desc = ttk.Label(panel, text=descripcion, wraplength=900, font=("Segoe UI", 9), foreground=self._colors["fg"])
+        lbl_desc.place(x=12, y=58, width=900, height=28)
 
         # Indicador de progreso/estado
         self.progress_var = tk.StringVar(value="Listo")
         lbl_prog = ttk.Label(panel, textvariable=self.progress_var)
-        lbl_prog.place(x=20, y=102)
+        lbl_prog.place(x=20, y=88)
 
         self.monitor_indicator = ttk.Label(panel, textvariable=self.summary_monitor_var, font=("Segoe UI", 9, "italic"), foreground=self._colors["fg"])
         self.monitor_indicator.place(x=210, y=58)
@@ -616,20 +789,6 @@ class FIMApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def on_simulate(self):
-        # Modificar ligeramente el archivo de prueba para simular ataque
-        try:
-            ensure_watch_dir()
-            if not os.path.exists(TEST_FILENAME):
-                with open(TEST_FILENAME, "w", encoding="utf-8") as f:
-                    f.write("# config inicial\n")
-            # Añadir una línea con timestamp
-            with open(TEST_FILENAME, "a", encoding="utf-8") as f:
-                f.write(f"# modificación simulada {datetime.datetime.utcnow().isoformat()}\n")
-            self.progress_var.set("Archivo modificado (simulación).")
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo simular la modificación: {e}")
-
     def _calcular_evento(self, hash_ant, hash_nuevo):
         if hash_nuevo == "ELIMINADO":
             return "Eliminado"
@@ -706,10 +865,12 @@ def main():
 
     # CLI: modo headless para entornos sin tkinter
     import argparse
-    parser = argparse.ArgumentParser(description="PoC FIM - modo CLI/GUI")
+    parser = argparse.ArgumentParser(description="PoC FIM - modo CLI/GUI/web")
     parser.add_argument("--headless", action="store_true", help="Ejecutar en modo sin GUI (CLI)")
-    parser.add_argument("--action", choices=["baseline","scan","monitor","simulate","clear","sync"], help="Acción a ejecutar en modo headless")
+    parser.add_argument("--action", choices=["baseline","scan","monitor","clear","sync"], help="Acción a ejecutar en modo headless")
     parser.add_argument("--monitor-interval", type=float, default=1.0, help="Intervalo (s) para monitor continuo en modo headless")
+    parser.add_argument("--web", action="store_true", help="Iniciar una interfaz web en localhost:8000")
+    parser.add_argument("--tk", action="store_true", help="Abrir la interfaz Tkinter clásica")
     args = parser.parse_args()
 
     if args.headless:
@@ -720,11 +881,6 @@ def main():
         elif args.action == "scan":
             verificar_integridad()
             print("ESCANEO_OK")
-        elif args.action == "simulate":
-            ensure_watch_dir()
-            with open(TEST_FILENAME, "a", encoding="utf-8") as f:
-                f.write(f"# simulacion {datetime.datetime.utcnow().isoformat()}\n")
-            print("SIMULACION_OK")
         elif args.action == "clear":
             limpiar_alertas()
             print("ALERTAS_LIMPIADAS")
@@ -745,13 +901,22 @@ def main():
             print("Modo headless: especifique --action baseline|scan|monitor|simulate|clear")
         return
 
-    # Si no hay tkinter disponible, informar y salir
-    if not GUI_AVAILABLE:
-        print("tkinter no disponible en este entorno. Use --headless para ejecutar en modo CLI.")
+    if args.web:
+        start_web_server()
         return
 
-    app = FIMApp()
-    app.mainloop()
+    # Si no hay tkinter disponible, informar y salir
+    if not GUI_AVAILABLE:
+        print("tkinter no disponible en este entorno. Use --web o --headless para ejecutar en modo web/CLI.")
+        return
+
+    if args.tk:
+        app = FIMApp()
+        app.mainloop()
+        return
+
+    # Por defecto, abrir la interfaz web para que sea más usable.
+    start_web_server()
 
 
 if __name__ == "__main__":
