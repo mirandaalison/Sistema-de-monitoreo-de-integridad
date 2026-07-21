@@ -22,6 +22,7 @@ import time
 import datetime
 import threading
 import subprocess
+import platform
 import html
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,8 +38,9 @@ except Exception:
     messagebox = None
 
 # --- Configuración global ---
-DB_FILENAME = "integridad_monitores.db"
-WATCH_DIR = os.path.join(os.getcwd(), "archivos_criticos")
+BASE_DIR = os.path.expanduser("~/.fim_poc")
+DB_FILENAME = os.path.join(BASE_DIR, "integridad_monitores.db")
+WATCH_DIR = os.path.join(BASE_DIR, "archivos_criticos")
 TEST_FILENAME = os.path.join(WATCH_DIR, "config.cfg")
 
 # Sincronización remota desde Metasploitable2 hacia Ubuntu Desktop
@@ -67,6 +69,7 @@ def get_db_connection():
 
 def init_db():
     """Crear la base de datos y las tablas si no existen."""
+    os.makedirs(os.path.dirname(DB_FILENAME), exist_ok=True)
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
@@ -862,6 +865,11 @@ class FIMApp(tk.Tk):
 
 
 def main():
+    # Evitar ejecución en Windows para que no monitoree rutas locales de Windows.
+    if platform.system().lower().startswith("win"):
+        print("ERROR: Este script debe ejecutarse en Ubuntu Desktop, no en Windows.")
+        return
+
     # Inicialización
     init_db()
     ensure_watch_dir()
