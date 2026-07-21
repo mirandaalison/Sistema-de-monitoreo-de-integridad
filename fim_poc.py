@@ -25,6 +25,8 @@ import subprocess
 import platform
 import html
 import urllib.parse
+import shutil
+import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
     import tkinter as tk
@@ -153,18 +155,35 @@ def sincronizar_remoto(progress_callback=None):
     local_path = REMOTE_TARGET_DIR
     os.makedirs(local_path, exist_ok=True)
     remote_contents_spec = remote_spec.rstrip("/") + "/."
-    cmd = ["scp", "-r", "-P", str(REMOTE_SSH_PORT)] + REMOTE_SSH_OPTIONS + [remote_contents_spec, local_path]
+
+    temp_dir = tempfile.mkdtemp()
     try:
+        cmd = ["scp", "-r", "-P", str(REMOTE_SSH_PORT)] + REMOTE_SSH_OPTIONS + [remote_contents_spec, temp_dir]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
         if proc.returncode != 0:
             message = proc.stderr.strip() or proc.stdout.strip() or "scp falló"
             if progress_callback:
                 progress_callback(remote_spec, f"SCP_ERROR: {message}")
             return False
-        else:
-            if progress_callback:
-                progress_callback(remote_spec, "REMOTO_SINCRONIZADO")
-            return True
+
+        # Eliminar cualquier contenido local viejo que ya no exista en remoto.
+        for entry in os.listdir(local_path):
+            full = os.path.join(local_path, entry)
+            try:
+                if os.path.isdir(full) and not os.path.islink(full):
+                    shutil.rmtree(full)
+                else:
+                    os.remove(full)
+            except Exception:
+                pass
+
+        # Mover la copia sincronizada temporal al directorio de vigilancia.
+        for entry in os.listdir(temp_dir):
+            shutil.move(os.path.join(temp_dir, entry), local_path)
+
+        if progress_callback:
+            progress_callback(remote_spec, "REMOTO_SINCRONIZADO")
+        return True
     except FileNotFoundError:
         if progress_callback:
             progress_callback(remote_spec, "SCP_NO_INSTALADO")
@@ -177,6 +196,11 @@ def sincronizar_remoto(progress_callback=None):
         if progress_callback:
             progress_callback(remote_spec, f"SCP_EXCEPTION: {e}")
         return False
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
 
 
 def establecer_linea_base(progress_callback=None):
