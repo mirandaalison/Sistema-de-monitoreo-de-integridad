@@ -41,10 +41,13 @@ DB_FILENAME = "integridad_monitores.db"
 WATCH_DIR = os.path.join(os.getcwd(), "archivos_criticos")
 TEST_FILENAME = os.path.join(WATCH_DIR, "config.cfg")
 
-# Sincronización remota desde Metasploitable2 hacia Ubuntu
+# Sincronización remota desde Metasploitable2 hacia Ubuntu Desktop
+# Ubuntu Desktop (monitora): 10.0.2.3
+# Metasploitable2 (objetivo monitoreado): 10.0.2.4
+# Kali Linux (atacante): 10.0.2.15
 REMOTE_SYNC_ENABLED = True
 REMOTE_USER = "msfadmin"
-REMOTE_HOST = "10.0.2.3"
+REMOTE_HOST = "10.0.2.4"
 REMOTE_SOURCE_DIR = "/home/msfadmin/archivos_criticos"
 REMOTE_SSH_PORT = 22
 REMOTE_SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"]
