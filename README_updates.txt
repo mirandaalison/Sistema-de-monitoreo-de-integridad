@@ -1,0 +1,1 @@
+This file is a staging helper; main README will be updated programmatically.

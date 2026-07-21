@@ -48,7 +48,7 @@ TEST_FILENAME = os.path.join(WATCH_DIR, "config.cfg")
 REMOTE_SYNC_ENABLED = True
 REMOTE_USER = "msfadmin"
 REMOTE_HOST = "10.0.2.4"
-REMOTE_SOURCE_DIR = "/home/msfadmin/archivos_criticos"
+REMOTE_SOURCE_DIR = "/home/msfadmin/carpeta_critica"
 REMOTE_SSH_PORT = 22
 REMOTE_SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"]
 REMOTE_TARGET_DIR = WATCH_DIR
