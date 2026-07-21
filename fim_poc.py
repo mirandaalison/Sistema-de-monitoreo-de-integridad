@@ -289,6 +289,27 @@ def actualizar_ultima_verificacion(path, timestamp=None):
     conn.close()
 
 
+def actualizar_inventario(path, hash_seguro, timestamp=None):
+    if timestamp is None:
+        timestamp = datetime.datetime.utcnow().isoformat()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR REPLACE INTO inventario (ruta_archivo, hash_seguro, ultima_verificacion) VALUES (?, ?, ?)",
+        (path, hash_seguro, timestamp),
+    )
+    conn.commit()
+    conn.close()
+
+
+def eliminar_de_inventario(path):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM inventario WHERE ruta_archivo = ?", (path,))
+    conn.commit()
+    conn.close()
+
+
 def verificar_integridad(progress_callback=None, completion_callback=None):
     """Verifica integridad comparando con la línea base y registra alertas.
 
@@ -336,8 +357,9 @@ def verificar_integridad(progress_callback=None, completion_callback=None):
             insertar_alerta(path, usuario, hash_prev, "ERROR_LECTURA", elapsed_ms)
             if progress_callback:
                 progress_callback(path, f"ERROR_LECTURA: {e}")
-            # actualizar ultima_verificacion para este archivo en inventario (si existe)
-            actualizar_ultima_verificacion(path)
+            # actualizar última verificación para este archivo en inventario (si existe)
+            if path in baseline:
+                actualizar_ultima_verificacion(path)
             continue
 
         if path in baseline:
@@ -345,21 +367,21 @@ def verificar_integridad(progress_callback=None, completion_callback=None):
                 # Línea base existente pero hash nulo (error previo)
                 if progress_callback:
                     progress_callback(path, "HASH_BASE_VACIO")
-                # comparar: si ahora tenemos hash, considerar como cambio
-                if h is not None:
-                    elapsed_ms = (time.perf_counter() - start) * 1000.0
-                    insertar_alerta(path, usuario, "HASH_BASE_VACIO", h, elapsed_ms)
+                # Si ahora podemos leer el archivo, actualizamos la línea base y no generamos alerta repetida.
+                actualizar_inventario(path, h)
             else:
                 if h != baseline[path]:
                     elapsed_ms = (time.perf_counter() - start) * 1000.0
                     insertar_alerta(path, usuario, baseline[path], h, elapsed_ms)
+                    actualizar_inventario(path, h)
+                else:
+                    actualizar_ultima_verificacion(path)
         else:
             # Archivo nuevo (no estaba en la línea base)
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             insertar_alerta(path, usuario, "NUEVO", h, elapsed_ms)
+            actualizar_inventario(path, h)
 
-        # actualizar última verificación
-        actualizar_ultima_verificacion(path)
         if progress_callback:
             progress_callback(path, "VERIFICADO")
 
@@ -368,6 +390,7 @@ def verificar_integridad(progress_callback=None, completion_callback=None):
     for path in eliminados:
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         insertar_alerta(path, usuario, baseline.get(path, "DESCONOCIDO"), "ELIMINADO", elapsed_ms)
+        eliminar_de_inventario(path)
         if progress_callback:
             progress_callback(path, "ELIMINADO")
 
