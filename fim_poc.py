@@ -58,6 +58,8 @@ REMOTE_SSH_OPTIONS = [
     "-o",
     "StrictHostKeyChecking=no",
     "-o",
+    "ConnectTimeout=15",
+    "-o",
     "HostKeyAlgorithms=+ssh-rsa",
     "-o",
     "PubkeyAcceptedAlgorithms=+ssh-rsa",
@@ -74,6 +76,15 @@ def get_db_connection():
     conn = sqlite3.connect(DB_FILENAME, timeout=10)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def normalize_path(path):
+    """Normalizar rutas para comparación y almacenamiento.
+
+    Esto evita falsos negativos cuando el mismo archivo se escribe con
+    separadores o referencias redundantes diferentes.
+    """
+    return os.path.normpath(path)
 
 
 def init_db():
@@ -178,7 +189,7 @@ def establecer_linea_base(progress_callback=None):
     archivos = []
     for root, _, files in os.walk(WATCH_DIR):
         for fn in files:
-            archivos.append(os.path.join(root, fn))
+            archivos.append(normalize_path(os.path.join(root, fn)))
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -273,10 +284,11 @@ def obtener_inventario():
     cur.execute("SELECT ruta_archivo, hash_seguro FROM inventario")
     rows = cur.fetchall()
     conn.close()
-    return {r: h for r, h in rows}
+    return {normalize_path(r): h for r, h in rows}
 
 
 def actualizar_ultima_verificacion(path, timestamp=None):
+    path = normalize_path(path)
     if timestamp is None:
         timestamp = datetime.datetime.utcnow().isoformat()
     conn = get_db_connection()
@@ -290,6 +302,7 @@ def actualizar_ultima_verificacion(path, timestamp=None):
 
 
 def actualizar_inventario(path, hash_seguro, timestamp=None):
+    path = normalize_path(path)
     if timestamp is None:
         timestamp = datetime.datetime.utcnow().isoformat()
     conn = get_db_connection()
@@ -303,6 +316,7 @@ def actualizar_inventario(path, hash_seguro, timestamp=None):
 
 
 def eliminar_de_inventario(path):
+    path = normalize_path(path)
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("DELETE FROM inventario WHERE ruta_archivo = ?", (path,))
@@ -332,18 +346,23 @@ def verificar_integridad(progress_callback=None, completion_callback=None):
         return
 
     # Sincronizar el contenido remoto antes de verificar
-    sincronizar_remoto(progress_callback=progress_callback)
+    remote_ok = sincronizar_remoto(progress_callback=progress_callback)
+    if not remote_ok:
+        if progress_callback:
+            progress_callback("", "SINCRONIZACION_REMOTA_FALLO")
+        if completion_callback:
+            completion_callback()
+        return
 
     # Escanear archivos actuales
     actuales = []
     for root, _, files in os.walk(WATCH_DIR):
         for fn in files:
-            actuales.append(os.path.join(root, fn))
+            actuales.append(normalize_path(os.path.join(root, fn)))
 
     # Mapear para detección de eliminaciones
-    baseline_paths = set(baseline.keys())
+    baseline_paths = set(normalize_path(p) for p in baseline.keys())
     actuales_paths = set(actuales)
-
     usuario = obtener_usuario()
 
     # Detectar archivos modificados o nuevos
@@ -363,16 +382,17 @@ def verificar_integridad(progress_callback=None, completion_callback=None):
             continue
 
         if path in baseline:
-            if baseline[path] is None:
+            baseline_hash = baseline[path]
+            if baseline_hash is None:
                 # Línea base existente pero hash nulo (error previo)
                 if progress_callback:
                     progress_callback(path, "HASH_BASE_VACIO")
                 # Si ahora podemos leer el archivo, actualizamos la línea base y no generamos alerta repetida.
                 actualizar_inventario(path, h)
             else:
-                if h != baseline[path]:
+                if h != baseline_hash:
                     elapsed_ms = (time.perf_counter() - start) * 1000.0
-                    insertar_alerta(path, usuario, baseline[path], h, elapsed_ms)
+                    insertar_alerta(path, usuario, baseline_hash, h, elapsed_ms)
                     actualizar_inventario(path, h)
                 else:
                     actualizar_ultima_verificacion(path)
